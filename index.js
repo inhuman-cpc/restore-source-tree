@@ -1,20 +1,19 @@
-import fs from 'fs';
-import path from 'path';
-import mkdirp from 'mkdirp';
-import { SourceMapConsumer } from 'source-map';
-import { Command } from 'commander';
-import glob from 'glob';
-import { version } from './package.json';
+import fs from "fs";
+import path from "path";
+import mkdirp from "mkdirp";
+import { SourceMapConsumer } from "source-map";
+import { Command } from "commander";
+import glob from "glob";
 
-const WEBPACK_PREFIX = 'webpack:///';
-const WEBPACK_FOOTER = [/\/*[*\s]+WEBPACK FOOTER/, /\/\/ WEBPACK FOOTER/];
-
-const program = new Command('restore-source-tree')
-  .version(version)
-  .usage('[options] <file>')
-  .description('Restores file structure from source map')
-  .option('-o, --out-dir [dir]', 'Output directory (\'output\' by default)', 'output')
-  .option('-n, --include-node-modules', 'Include source files in node_modules')
+const program = new Command("restore-source-tree")
+  .usage("[options] <file>")
+  .description("Restores file structure from source map")
+  .option(
+    "-o, --out-dir [dir]",
+    "Output directory ('output' by default)",
+    "output",
+  )
+  .option("-n, --include-node-modules", "Include source files in node_modules")
   .parse(process.argv);
 
 if (program.args.length === 0) {
@@ -22,81 +21,68 @@ if (program.args.length === 0) {
   process.exit(1);
 }
 
-const readJson = filename => {
+const readJson = (filename) => {
   try {
-    return JSON.parse(fs.readFileSync(filename, 'utf8'));
-  } catch(e) {
+    return JSON.parse(fs.readFileSync(filename, "utf8"));
+  } catch (e) {
     console.error(`Parsing file '${filename}' failed: ${e.message}`);
     process.exit(1);
   }
-}
-
-const getSourceList = smc => {
-  let sources = smc.sources
-    .filter(src => src.startsWith(WEBPACK_PREFIX))
-    .map(src => [src.replace(WEBPACK_PREFIX, ''), src])
-    .filter(([filePath]) => !filePath.startsWith('(webpack)'));
-
-  if (!program.includeNodeModules) {
-    sources = sources.filter(([filePath]) => !filePath.startsWith('~/'));
-  }
-  
-  return sources;
-}
-
-const trimFooter = (str) => {
-  const index = WEBPACK_FOOTER.reduce((result, footer) => {
-    if (result >= 0) return result;
-    const match = footer.exec(str);
-    if (!match) return -1;
-    return match.index;
-  }, -1);
-  if (index < 0) return str;
-  return str.substr(0, index).trimRight() + '\n';
 };
 
-const saveSourceContent = (smc, filePath, src) => {
-  const content = trimFooter(smc.sourceContentFor(src));
-  const outPath = path.join(program.outDir, filePath);
+const getSourceList = (smc) => {
+  return smc.sources.filter(
+    (filePath) =>
+      !filePath.includes("/webpack/") && !filePath.includes("/node_modules/"),
+  );
+};
+
+const saveSourceContent = (smc, filePath) => {
+  const content = smc.sourceContentFor(filePath, true);
+  if (!content) {
+    console.log(`Error content ${filePath}`);
+    console.log(content);
+    return;
+  }
+
+  const outPath = path.join(program.outDir, filePath.replace("webpack://", ""));
   const dir = path.dirname(outPath);
 
-  if (content.length < 2) return;
-
-  mkdirp(dir, err => {
+  mkdirp(dir, (err) => {
     if (err) {
-      console.error('Failed creating directory', dir);
+      console.error("Failed creating directory", dir);
       process.exit(1);
     } else {
-      fs.writeFile(outPath, content, err => {
+      fs.writeFile(outPath, content, (err) => {
         if (err) {
-          console.error('Failed writing file', outPath);
+          console.error("Failed writing file", outPath);
           process.exit(1);
         }
       });
     }
-  })
-}
+  });
+};
 
-function processFile(filename) {
+async function processFile(filename) {
   const json = readJson(filename);
+  if (json.version !== 3) {
+    throw new Error(`Invalid SourceMap Version ${json.version}`);
+  }
 
-  const smc = new SourceMapConsumer(json);
-  
+  const smc = await new SourceMapConsumer(json);
   const sources = getSourceList(smc);
-
-  sources.forEach(([filePath, src]) => saveSourceContent(smc, filePath, src));
-
-  console.log(`Processed ${sources.length} files`);
+  sources.forEach((filePath) => saveSourceContent(smc, filePath));
+  console.log(`Processed ${sources.length} files for ${filename}`);
 }
 
 program.args
-.map(pattern => glob.sync(pattern))
-.reduce((prev, curr) => prev.concat(curr), [])
-.forEach((filename) => {
-  try {
-    fs.accessSync(filename);
-    processFile(filename);
-  } catch (err) {
-    console.error(err.message);
-  }
-});
+  .map((pattern) => glob.sync(pattern))
+  .reduce((prev, curr) => prev.concat(curr), [])
+  .forEach((filename) => {
+    try {
+      fs.accessSync(filename);
+      processFile(filename);
+    } catch (err) {
+      console.error(err.message);
+    }
+  });
